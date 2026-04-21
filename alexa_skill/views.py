@@ -107,8 +107,8 @@ def alexa_webhook(request):
         body.get("session", {}).get("application", {}).get("applicationId")
         or body.get("context", {}).get("System", {}).get("application", {}).get("applicationId")
     )
-    if app_id != ALEXA_APP_ID:
-        return JsonResponse({"error": "Forbidden – wrong skill ID"}, status=403)
+    # if app_id != ALEXA_APP_ID:
+    #     return JsonResponse({"error": "Forbidden – wrong skill ID"}, status=403)
 
     request_type = body.get("request", {}).get("type")
 
