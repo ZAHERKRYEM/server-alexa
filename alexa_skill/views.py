@@ -16,9 +16,12 @@ from .models import AuthCode, AccessToken
 @csrf_exempt
 def token_view(request):
     try:
-        data = json.loads(request.body)
+        data = request.POST or json.loads(request.body)
 
         code = data.get("code")
+
+        if not code:
+            return JsonResponse({"error": "missing_code"}, status=400)
 
         auth_code = AuthCode.objects.get(code=code)
 
@@ -31,7 +34,8 @@ def token_view(request):
 
         return JsonResponse({
             "access_token": token,
-            "token_type": "Bearer"
+            "token_type": "bearer",
+            "expires_in": 3600
         })
 
     except AuthCode.DoesNotExist:
@@ -50,6 +54,13 @@ def authorize_view(request):
     redirect_uri = request.GET.get("redirect_uri")
     state = request.GET.get("state")
 
+    # 🔴 حماية مهمة جدًا
+    if not redirect_uri or not state:
+        return JsonResponse({
+            "error": "invalid_request",
+            "message": "missing redirect_uri or state"
+        }, status=400)
+
     if not request.user.is_authenticated:
         return redirect(f"/login/?redirect_uri={redirect_uri}&state={state}")
 
@@ -60,7 +71,6 @@ def authorize_view(request):
         code=code
     )
 
-    # IMPORTANT: لازم نرجع state + code
     return redirect(f"{redirect_uri}?state={state}&code={code}")
 
 
@@ -80,6 +90,11 @@ def login_view(request):
 
         if user:
             login(request, user)
+
+            if not redirect_uri or not state:
+                return JsonResponse({
+                    "error": "missing_redirect_data"
+                }, status=400)
 
             return redirect(
                 f"/authorize/?redirect_uri={redirect_uri}&state={state}"
@@ -143,7 +158,7 @@ def control_device(device, action):
     device_states[device.lower()] = action
     verb = "turned on" if action == "on" else "turned off"
 
-    return f"OK, I've {verb} the {device}."
+    return f"OK, I've {verb} the {device}"
 
 
 # ─────────────────────────────────────────────
@@ -199,7 +214,6 @@ def alexa_webhook(request):
         body = json.loads(request.body)
         print("REQUEST:\n", json.dumps(body, indent=2))
 
-        # ── 🔑 ACCESS TOKEN ─────────────────
         access_token = (
             body.get("context", {})
             .get("System", {})
@@ -224,11 +238,9 @@ def alexa_webhook(request):
 
         request_type = body.get("request", {}).get("type")
 
-        # ── LaunchRequest ──
         if request_type == "LaunchRequest":
             response_data = handle_launch()
 
-        # ── IntentRequest ──
         elif request_type == "IntentRequest":
             intent = body["request"]["intent"]
             name = intent.get("name")
