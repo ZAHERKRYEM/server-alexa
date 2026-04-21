@@ -10,13 +10,14 @@ from .models import AuthCode, AccessToken
 
 
 # ─────────────────────────────────────────────
-# 🔐 OAuth / Account Linking
+# 🔐 TOKEN ENDPOINT
 # ─────────────────────────────────────────────
 
 @csrf_exempt
 def token_view(request):
     try:
         data = json.loads(request.body)
+
         code = data.get("code")
 
         auth_code = AuthCode.objects.get(code=code)
@@ -41,11 +42,16 @@ def token_view(request):
         return JsonResponse({"error": "server_error"}, status=500)
 
 
+# ─────────────────────────────────────────────
+# 🔐 AUTHORIZE ENDPOINT
+# ─────────────────────────────────────────────
+
 def authorize_view(request):
     redirect_uri = request.GET.get("redirect_uri")
+    state = request.GET.get("state")
 
     if not request.user.is_authenticated:
-        return redirect(f"/login/?redirect_uri={redirect_uri}")
+        return redirect(f"/login/?redirect_uri={redirect_uri}&state={state}")
 
     code = str(uuid.uuid4())
 
@@ -54,11 +60,17 @@ def authorize_view(request):
         code=code
     )
 
-    return redirect(f"{redirect_uri}?code={code}")
+    # IMPORTANT: لازم نرجع state + code
+    return redirect(f"{redirect_uri}?state={state}&code={code}")
 
+
+# ─────────────────────────────────────────────
+# 🔐 LOGIN PAGE
+# ─────────────────────────────────────────────
 
 def login_view(request):
     redirect_uri = request.GET.get("redirect_uri")
+    state = request.GET.get("state")
 
     if request.method == "POST":
         username = request.POST.get("username")
@@ -68,13 +80,16 @@ def login_view(request):
 
         if user:
             login(request, user)
-            return redirect(f"/authorize/?redirect_uri={redirect_uri}")
+
+            return redirect(
+                f"/authorize/?redirect_uri={redirect_uri}&state={state}"
+            )
 
     return render(request, "login.html")
 
 
 # ─────────────────────────────────────────────
-# 🔑 Helper: تحقق من المستخدم
+# 🔑 USER FROM TOKEN
 # ─────────────────────────────────────────────
 
 def get_user_from_token(token):
@@ -85,45 +100,45 @@ def get_user_from_token(token):
 
 
 # ─────────────────────────────────────────────
-# Alexa Helpers
+# 🧠 ALEXA HELPERS
 # ─────────────────────────────────────────────
 
-def build_response(speech_text, should_end_session=True, reprompt_text=None):
+def build_response(text, should_end_session=True, reprompt=None):
     response = {
         "version": "1.0",
         "response": {
             "outputSpeech": {
                 "type": "PlainText",
-                "text": speech_text,
+                "text": text,
             },
             "shouldEndSession": should_end_session,
         },
     }
 
-    if reprompt_text:
+    if reprompt:
         response["response"]["reprompt"] = {
             "outputSpeech": {
                 "type": "PlainText",
-                "text": reprompt_text
+                "text": reprompt
             }
         }
 
     return response
 
 
-def get_slot_value(intent_data, slot_name):
-    return intent_data.get("slots", {}).get(slot_name, {}).get("value")
+def get_slot_value(intent, name):
+    return intent.get("slots", {}).get(name, {}).get("value")
 
 
 # ─────────────────────────────────────────────
-# Device Logic
+# 🔌 DEVICE LOGIC
 # ─────────────────────────────────────────────
 
 device_states = {}
 
 def control_device(device, action):
     if not device:
-        return "I didn't catch which device you meant. Please try again."
+        return "I didn't catch which device you meant."
 
     device_states[device.lower()] = action
     verb = "turned on" if action == "on" else "turned off"
@@ -132,12 +147,12 @@ def control_device(device, action):
 
 
 # ─────────────────────────────────────────────
-# Intent Handlers
+# 🎯 INTENT HANDLERS
 # ─────────────────────────────────────────────
 
 def handle_launch():
     return build_response(
-        "Welcome to Baz Rays! Please link your account to continue.",
+        "Welcome to Baz Rays. Please link your account in the Alexa app.",
         should_end_session=True
     )
 
@@ -154,7 +169,7 @@ def handle_turn_off(intent):
 
 def handle_help():
     return build_response(
-        "You can say turn on the lights or turn off the fan.",
+        "Say turn on the lights or turn off the fan.",
         should_end_session=False
     )
 
@@ -171,7 +186,7 @@ def handle_fallback():
 
 
 # ─────────────────────────────────────────────
-# 🔥 Main Alexa Webhook (مع التحقق من المستخدم)
+# 🚀 MAIN ALEXA WEBHOOK
 # ─────────────────────────────────────────────
 
 @csrf_exempt
@@ -184,7 +199,7 @@ def alexa_webhook(request):
         body = json.loads(request.body)
         print("REQUEST:\n", json.dumps(body, indent=2))
 
-        # ── 🔑 جلب access token ─────────────────
+        # ── 🔑 ACCESS TOKEN ─────────────────
         access_token = (
             body.get("context", {})
             .get("System", {})
@@ -194,14 +209,14 @@ def alexa_webhook(request):
 
         user = get_user_from_token(access_token)
 
-        # ❌ المستخدم غير مسجل
+        # ❌ Not linked
         if not user:
             return JsonResponse({
                 "version": "1.0",
                 "response": {
                     "outputSpeech": {
                         "type": "PlainText",
-                        "text": "Please link your account using the Alexa app."
+                        "text": "Please link your account in the Alexa app."
                     },
                     "shouldEndSession": True
                 }
@@ -209,11 +224,11 @@ def alexa_webhook(request):
 
         request_type = body.get("request", {}).get("type")
 
-        # ── Launch ──
+        # ── LaunchRequest ──
         if request_type == "LaunchRequest":
             response_data = handle_launch()
 
-        # ── Intent ──
+        # ── IntentRequest ──
         elif request_type == "IntentRequest":
             intent = body["request"]["intent"]
             name = intent.get("name")
@@ -229,7 +244,6 @@ def alexa_webhook(request):
 
             response_data = handlers.get(name, handle_fallback)()
 
-        # ── End Session ──
         else:
             response_data = build_response("Goodbye")
 
