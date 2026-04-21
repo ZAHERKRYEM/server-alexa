@@ -94,8 +94,11 @@ def handle_fallback():
 # Main webhook (FIXED + DEBUG)
 # ─────────────────────────────────────────────
 @csrf_exempt
-@require_POST
 def alexa_webhook(request):
+    if request.method == "GET":
+        return JsonResponse({
+            "message": "Alexa endpoint is working"
+        })
     try:
         # ── Parse JSON safely ─────────────────────────────
         try:
