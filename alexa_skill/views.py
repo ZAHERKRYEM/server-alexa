@@ -91,59 +91,94 @@ def handle_fallback():
 
 
 # ─────────────────────────────────────────────
-# Main webhook
+# Main webhook (FIXED + DEBUG)
 # ─────────────────────────────────────────────
 @csrf_exempt
 @require_POST
 def alexa_webhook(request):
     try:
-        body = json.loads(request.body)
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+        # ── Parse JSON safely ─────────────────────────────
+        try:
+            body = json.loads(request.body)
+            print("REQUEST:\n", json.dumps(body, indent=2))
+        except json.JSONDecodeError:
+            return JsonResponse({
+                "version": "1.0",
+                "response": {
+                    "outputSpeech": {
+                        "type": "PlainText",
+                        "text": "Invalid request format."
+                    },
+                    "shouldEndSession": True
+                }
+            }, safe=False)
 
-    # ── Verify this request is from YOUR skill ────────────────────────────────
-    # applicationId can live in session OR context.System (e.g. on LaunchRequest)
-    app_id = (
-        body.get("session", {}).get("application", {}).get("applicationId")
-        or body.get("context", {}).get("System", {}).get("application", {}).get("applicationId")
-    )
-    # if app_id != ALEXA_APP_ID:
-    #     return JsonResponse({"error": "Forbidden – wrong skill ID"}, status=403)
+        # ── (اختياري) تحقق من skill ID ─────────────────────
+        app_id = (
+            body.get("session", {}).get("application", {}).get("applicationId")
+            or body.get("context", {}).get("System", {}).get("application", {}).get("applicationId")
+        )
+        print("APP ID:", app_id)
 
-    request_type = body.get("request", {}).get("type")
+        # ❗ معطّل مؤقتًا للتجربة
+        # if app_id != ALEXA_APP_ID:
+        #     return JsonResponse({"error": "Forbidden"}, status=403)
 
-    # ── LaunchRequest ─────────────────────────────────────────────────────────
-    if request_type == "LaunchRequest":
-        response_data = handle_launch()
+        request_type = body.get("request", {}).get("type")
 
-    # ── IntentRequest ─────────────────────────────────────────────────────────
-    elif request_type == "IntentRequest":
-        intent = body["request"]["intent"]
-        intent_name = intent.get("name")
+        # ── LaunchRequest ─────────────────────────────────
+        if request_type == "LaunchRequest":
+            response_data = handle_launch()
 
-        handlers = {
-            "TurnOnIntent":          lambda: handle_turn_on(intent),
-            "TurnOffIntent":         lambda: handle_turn_off(intent),
-            "AMAZON.HelpIntent":     handle_help,
-            "AMAZON.CancelIntent":   handle_stop_cancel,
-            "AMAZON.StopIntent":     handle_stop_cancel,
-            "AMAZON.FallbackIntent": handle_fallback,
-        }
+        # ── IntentRequest ────────────────────────────────
+        elif request_type == "IntentRequest":
+            intent = body.get("request", {}).get("intent", {})
+            intent_name = intent.get("name")
 
-        handler = handlers.get(intent_name)
-        if handler:
-            response_data = handler()
+            handlers = {
+                "TurnOnIntent":          lambda: handle_turn_on(intent),
+                "TurnOffIntent":         lambda: handle_turn_off(intent),
+                "AMAZON.HelpIntent":     handle_help,
+                "AMAZON.CancelIntent":   handle_stop_cancel,
+                "AMAZON.StopIntent":     handle_stop_cancel,
+                "AMAZON.FallbackIntent": handle_fallback,
+            }
+
+            handler = handlers.get(intent_name)
+            if handler:
+                response_data = handler()
+            else:
+                response_data = build_response(
+                    "I'm not sure how to handle that. Try saying: turn on the lights."
+                )
+
+        # ── SessionEndedRequest ──────────────────────────
+        elif request_type == "SessionEndedRequest":
+            response_data = {"version": "1.0", "response": {}}
+
+        # ── Unknown request ──────────────────────────────
         else:
             response_data = build_response(
-                "I'm not sure how to handle that. Try saying: turn on the lights."
+                "Something went wrong. Please try again."
             )
 
-    # ── SessionEndedRequest ───────────────────────────────────────────────────
-    elif request_type == "SessionEndedRequest":
-        # Alexa ignores the response body here — just return 200 OK
-        response_data = {"version": "1.0", "response": {}}
+        # ── Print response (debug) ───────────────────────
+        print("RESPONSE:\n", json.dumps(response_data, indent=2))
 
-    else:
-        response_data = build_response("Something went wrong. Please try again.")
+        # ✅ IMPORTANT FIX
+        return JsonResponse(response_data, safe=False)
 
-    return JsonResponse(response_data)
+    except Exception as e:
+        # ── Catch ANY crash so Alexa doesn't break ───────
+        print("ERROR:", str(e))
+
+        return JsonResponse({
+            "version": "1.0",
+            "response": {
+                "outputSpeech": {
+                    "type": "PlainText",
+                    "text": "Internal server error."
+                },
+                "shouldEndSession": True
+            }
+        }, safe=False)
