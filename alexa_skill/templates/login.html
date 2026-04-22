@@ -1,6 +1,82 @@
-<form method="post">
-  {% csrf_token %}
-  <input name="username" placeholder="Username">
-  <input name="password" type="password" placeholder="Password">
-  <button type="submit">Login</button>
-</form>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Baz Rays – Login</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 2.5rem 2rem;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 25px 50px rgba(0,0,0,0.5);
+    }
+    .logo { text-align: center; margin-bottom: 2rem; }
+    .logo h1 { color: #38bdf8; font-size: 1.8rem; font-weight: 700; letter-spacing: 1px; }
+    .logo p { color: #94a3b8; font-size: 0.85rem; margin-top: 0.3rem; }
+    label {
+      display: block; color: #94a3b8; font-size: 0.8rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.4rem;
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%; background: #0f172a; border: 1px solid #334155;
+      border-radius: 8px; padding: 0.75rem 1rem; color: #f1f5f9;
+      font-size: 1rem; outline: none; transition: border-color 0.2s; margin-bottom: 1.2rem;
+    }
+    input[type="text"]:focus, input[type="password"]:focus { border-color: #38bdf8; }
+    button[type="submit"] {
+      width: 100%; background: #0284c7; color: #fff; border: none;
+      border-radius: 8px; padding: 0.85rem; font-size: 1rem;
+      font-weight: 600; cursor: pointer; margin-top: 0.5rem;
+    }
+    button[type="submit"]:hover { background: #0369a1; }
+    .error {
+      background: #450a0a; border: 1px solid #991b1b; color: #fca5a5;
+      border-radius: 8px; padding: 0.75rem 1rem; font-size: 0.875rem;
+      margin-bottom: 1.2rem; text-align: center;
+    }
+    .footer { text-align: center; margin-top: 1.5rem; color: #475569; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <h1>&#9729;&#65039; Baz Rays</h1>
+      <p>Link your account to Alexa</p>
+    </div>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/login/?redirect_uri={{ redirect_uri|urlencode }}&state={{ state }}">
+      {% csrf_token %}
+      <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}" />
+      <input type="hidden" name="state" value="{{ state }}" />
+
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" placeholder="Enter username" autocomplete="username" required />
+
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" placeholder="Enter password" autocomplete="current-password" required />
+
+      <button type="submit">Login &amp; Link Account</button>
+    </form>
+
+    <div class="footer">Secure OAuth 2.0 Account Linking</div>
+  </div>
+</body>
+</html>

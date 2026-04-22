@@ -26,7 +26,12 @@ SECRET_KEY = 'django-insecure-cr*c+2l5#osd30(bhp53vo)gsl&pif%4l)rkn73^kvfiy+_-5b
 DEBUG = True
 
 ALLOWED_HOSTS = ['*']  # Allow all hosts for development; restrict in production
-
+CSRF_TRUSTED_ORIGINS = [
+    "https://bazrays.pythonanywhere.com",
+    "https://alexa.amazon.com",
+    "https://pitangui.amazon.com",
+    "https://layla.amazon.com",
+]
 
 # Application definition
 

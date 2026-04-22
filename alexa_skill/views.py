@@ -1,5 +1,6 @@
 import json
 import uuid
+from urllib.parse import urlencode
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -10,15 +11,128 @@ from .models import AuthCode, AccessToken
 
 
 # ─────────────────────────────────────────────
+# 🔐 AUTHORIZE ENDPOINT
+# ─────────────────────────────────────────────
+
+def authorize_view(request):
+    """
+    Alexa يفتح هذا الرابط في WebView.
+    المطلوب:
+      - response_type = "code"
+      - client_id     (يطابق ما في Alexa Console)
+      - redirect_uri
+      - state
+    """
+    redirect_uri  = request.GET.get("redirect_uri", "").strip()
+    state         = request.GET.get("state", "").strip()
+    response_type = request.GET.get("response_type", "")
+    # client_id يمكن التحقق منه هنا إن أردت
+    # client_id = request.GET.get("client_id", "")
+
+    # ── حماية: تأكد من الحقول الأساسية ──
+    if not redirect_uri or not state:
+        return JsonResponse(
+            {"error": "invalid_request", "message": "missing redirect_uri or state"},
+            status=400,
+        )
+
+    if response_type != "code":
+        return JsonResponse(
+            {"error": "unsupported_response_type"},
+            status=400,
+        )
+
+    # ── إذا المستخدم غير مسجّل دخوله → أرسله لصفحة Login ──
+    if not request.user.is_authenticated:
+        params = urlencode({"redirect_uri": redirect_uri, "state": state})
+        return redirect(f"/login/?{params}")
+
+    # ── المستخدم مسجّل → أنشئ auth code وأعده لـ Alexa ──
+    code = str(uuid.uuid4())
+    AuthCode.objects.create(user=request.user, code=code)
+
+    separator = "&" if "?" in redirect_uri else "?"
+    return redirect(f"{redirect_uri}{separator}state={state}&code={code}")
+
+
+# ─────────────────────────────────────────────
+# 🔐 LOGIN PAGE
+# ─────────────────────────────────────────────
+
+def login_view(request):
+    # redirect_uri و state يأتيان من GET params (الرابط نفسه)
+    # أو من hidden fields في الـ POST  — نأخذ من كليهما احتياطاً
+    redirect_uri = (
+        request.POST.get("redirect_uri")
+        or request.GET.get("redirect_uri", "")
+    ).strip()
+
+    state = (
+        request.POST.get("state")
+        or request.GET.get("state", "")
+    ).strip()
+
+    if request.method == "POST":
+        username = request.POST.get("username", "").strip()
+        password = request.POST.get("password", "")
+
+        user = authenticate(request, username=username, password=password)
+
+        if user:
+            login(request, user)
+
+            # بعد تسجيل الدخول → أكمل دورة OAuth
+            if redirect_uri and state:
+                params = urlencode({
+                    "redirect_uri": redirect_uri,
+                    "state": state,
+                    "response_type": "code",
+                })
+                return redirect(f"/authorize/?{params}")
+
+            # fallback: لو لم تكن هناك بيانات OAuth
+            return JsonResponse({"error": "missing_redirect_data"}, status=400)
+
+        # كلمة مرور خاطئة
+        return render(request, "login.html", {
+            "error": "Invalid username or password. Please try again.",
+            "redirect_uri": redirect_uri,
+            "state": state,
+        })
+
+    # GET → اعرض صفحة اللوجين
+    return render(request, "login.html", {
+        "redirect_uri": redirect_uri,
+        "state": state,
+    })
+
+
+# ─────────────────────────────────────────────
 # 🔐 TOKEN ENDPOINT
 # ─────────────────────────────────────────────
 
 @csrf_exempt
 def token_view(request):
+    """
+    Alexa يطلب access_token بعد الحصول على auth code.
+    يرسل: grant_type, code, redirect_uri, client_id, client_secret
+    """
     try:
-        data = request.POST or json.loads(request.body)
+        # Alexa يرسل كـ application/x-www-form-urlencoded
+        if request.content_type and "application/json" in request.content_type:
+            data = json.loads(request.body)
+        else:
+            data = request.POST
 
-        code = data.get("code")
+        grant_type = data.get("grant_type", "")
+        code       = data.get("code", "")
+
+        # ── دعم authorization_code فقط (يمكن إضافة refresh_token لاحقاً) ──
+        if grant_type != "authorization_code":
+            return JsonResponse(
+                {"error": "unsupported_grant_type"},
+                status=400,
+            )
 
         if not code:
             return JsonResponse({"error": "missing_code"}, status=400)
@@ -26,16 +140,15 @@ def token_view(request):
         auth_code = AuthCode.objects.get(code=code)
 
         token = str(uuid.uuid4())
+        AccessToken.objects.create(user=auth_code.user, token=token)
 
-        AccessToken.objects.create(
-            user=auth_code.user,
-            token=token
-        )
+        # احذف الـ auth code بعد الاستخدام (استخدام مرة واحدة فقط)
+        auth_code.delete()
 
         return JsonResponse({
             "access_token": token,
-            "token_type": "bearer",
-            "expires_in": 3600
+            "token_type":   "Bearer",
+            "expires_in":   3600,
         })
 
     except AuthCode.DoesNotExist:
@@ -47,70 +160,13 @@ def token_view(request):
 
 
 # ─────────────────────────────────────────────
-# 🔐 AUTHORIZE ENDPOINT
-# ─────────────────────────────────────────────
-
-def authorize_view(request):
-    redirect_uri = request.GET.get("redirect_uri")
-    state = request.GET.get("state")
-
-    # 🔴 حماية مهمة جدًا
-    if not redirect_uri or not state:
-        return JsonResponse({
-            "error": "invalid_request",
-            "message": "missing redirect_uri or state"
-        }, status=400)
-
-    if not request.user.is_authenticated:
-        return redirect(f"/login/?redirect_uri={redirect_uri}&state={state}")
-
-    code = str(uuid.uuid4())
-
-    AuthCode.objects.create(
-        user=request.user,
-        code=code
-    )
-
-    return redirect(f"{redirect_uri}?state={state}&code={code}")
-
-
-# ─────────────────────────────────────────────
-# 🔐 LOGIN PAGE
-# ─────────────────────────────────────────────
-
-def login_view(request):
-    redirect_uri = request.GET.get("redirect_uri")
-    state = request.GET.get("state")
-
-    if request.method == "POST":
-        username = request.POST.get("username")
-        password = request.POST.get("password")
-
-        user = authenticate(username=username, password=password)
-
-        if user:
-            login(request, user)
-
-            if not redirect_uri or not state:
-                return JsonResponse({
-                    "error": "missing_redirect_data"
-                }, status=400)
-
-            return redirect(
-                f"/authorize/?redirect_uri={redirect_uri}&state={state}"
-            )
-
-    return render(request, "login.html")
-
-
-# ─────────────────────────────────────────────
 # 🔑 USER FROM TOKEN
 # ─────────────────────────────────────────────
 
 def get_user_from_token(token):
     try:
         return AccessToken.objects.get(token=token).user
-    except:
+    except Exception:
         return None
 
 
@@ -122,22 +178,14 @@ def build_response(text, should_end_session=True, reprompt=None):
     response = {
         "version": "1.0",
         "response": {
-            "outputSpeech": {
-                "type": "PlainText",
-                "text": text,
-            },
+            "outputSpeech": {"type": "PlainText", "text": text},
             "shouldEndSession": should_end_session,
         },
     }
-
     if reprompt:
         response["response"]["reprompt"] = {
-            "outputSpeech": {
-                "type": "PlainText",
-                "text": reprompt
-            }
+            "outputSpeech": {"type": "PlainText", "text": reprompt}
         }
-
     return response
 
 
@@ -151,14 +199,13 @@ def get_slot_value(intent, name):
 
 device_states = {}
 
+
 def control_device(device, action):
     if not device:
         return "I didn't catch which device you meant."
-
     device_states[device.lower()] = action
     verb = "turned on" if action == "on" else "turned off"
-
-    return f"OK, I've {verb} the {device}"
+    return f"OK, I've {verb} the {device}."
 
 
 # ─────────────────────────────────────────────
@@ -167,8 +214,9 @@ def control_device(device, action):
 
 def handle_launch():
     return build_response(
-        "Welcome to Baz Rays. Please link your account in the Alexa app.",
-        should_end_session=True
+        "Welcome to Baz Rays. You can say: turn on the lights, or turn off the fan.",
+        should_end_session=False,
+        reprompt="What would you like to control?",
     )
 
 
@@ -185,7 +233,7 @@ def handle_turn_off(intent):
 def handle_help():
     return build_response(
         "Say turn on the lights or turn off the fan.",
-        should_end_session=False
+        should_end_session=False,
     )
 
 
@@ -195,8 +243,8 @@ def handle_stop():
 
 def handle_fallback():
     return build_response(
-        "Sorry, I didn't understand that.",
-        should_end_session=False
+        "Sorry, I didn't understand that. Try saying turn on or turn off.",
+        should_end_session=False,
     )
 
 
@@ -206,9 +254,8 @@ def handle_fallback():
 
 @csrf_exempt
 def alexa_webhook(request):
-
     if request.method == "GET":
-        return JsonResponse({"message": "Alexa endpoint is working"})
+        return JsonResponse({"message": "Alexa endpoint is working ✅"})
 
     try:
         body = json.loads(request.body)
@@ -216,24 +263,25 @@ def alexa_webhook(request):
 
         access_token = (
             body.get("context", {})
-            .get("System", {})
-            .get("user", {})
-            .get("accessToken")
+                .get("System", {})
+                .get("user", {})
+                .get("accessToken")
         )
 
         user = get_user_from_token(access_token)
 
-        # ❌ Not linked
         if not user:
+            # المستخدم لم يربط حسابه بعد
             return JsonResponse({
                 "version": "1.0",
                 "response": {
                     "outputSpeech": {
                         "type": "PlainText",
-                        "text": "Please link your account in the Alexa app."
+                        "text": "Please link your account first. Open the Alexa app and complete account linking.",
                     },
-                    "shouldEndSession": True
-                }
+                    "card": {"type": "LinkAccount"},
+                    "shouldEndSession": True,
+                },
             })
 
         request_type = body.get("request", {}).get("type")
@@ -243,36 +291,34 @@ def alexa_webhook(request):
 
         elif request_type == "IntentRequest":
             intent = body["request"]["intent"]
-            name = intent.get("name")
+            name   = intent.get("name")
 
             handlers = {
-                "TurnOnIntent": lambda: handle_turn_on(intent),
-                "TurnOffIntent": lambda: handle_turn_off(intent),
-                "AMAZON.HelpIntent": handle_help,
-                "AMAZON.StopIntent": handle_stop,
-                "AMAZON.CancelIntent": handle_stop,
+                "TurnOnIntent":          lambda: handle_turn_on(intent),
+                "TurnOffIntent":         lambda: handle_turn_off(intent),
+                "AMAZON.HelpIntent":     handle_help,
+                "AMAZON.StopIntent":     handle_stop,
+                "AMAZON.CancelIntent":   handle_stop,
                 "AMAZON.FallbackIntent": handle_fallback,
             }
 
             response_data = handlers.get(name, handle_fallback)()
 
+        elif request_type == "SessionEndedRequest":
+            response_data = {"version": "1.0", "response": {}}
+
         else:
-            response_data = build_response("Goodbye")
+            response_data = build_response("Goodbye.")
 
         print("RESPONSE:\n", json.dumps(response_data, indent=2))
-
         return JsonResponse(response_data)
 
     except Exception as e:
         print("ERROR:", str(e))
-
         return JsonResponse({
             "version": "1.0",
             "response": {
-                "outputSpeech": {
-                    "type": "PlainText",
-                    "text": "Internal error occurred."
-                },
-                "shouldEndSession": True
-            }
+                "outputSpeech": {"type": "PlainText", "text": "An internal error occurred."},
+                "shouldEndSession": True,
+            },
         })
