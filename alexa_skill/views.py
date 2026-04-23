@@ -8,12 +8,11 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render, redirect
 from django.contrib.auth import authenticate, login
-from django.views.decorators.http import require_http_methods
 
 from .models import AuthCode, AccessToken, Device
 
 # ─────────────────────────────────────────────
-# ⚙️  CONFIG
+# CONFIG
 # ─────────────────────────────────────────────
 
 CLIENT_ID     = "test"
@@ -21,7 +20,7 @@ CLIENT_SECRET = "test"
 
 
 # ══════════════════════════════════════════════
-#  🔐  OAuth – Authorize / Login / Token
+#  OAuth – Authorize / Login / Token
 # ══════════════════════════════════════════════
 
 def authorize_view(request):
@@ -71,7 +70,7 @@ def login_view(request):
             return JsonResponse({"error": "missing_redirect_data"}, status=400)
 
         return render(request, "login.html", {
-            "error": "اسم المستخدم أو كلمة المرور غير صحيحة.",
+            "error": "Invalid username or password.",
             "redirect_uri": redirect_uri,
             "state": state,
         })
@@ -93,6 +92,7 @@ def token_view(request):
         client_id_in  = data.get("client_id", "")
         client_sec_in = data.get("client_secret", "")
 
+        # Alexa sometimes sends credentials in the Authorization: Basic header
         auth_header = request.META.get("HTTP_AUTHORIZATION", "")
         if auth_header.startswith("Basic "):
             decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
@@ -129,7 +129,7 @@ def token_view(request):
 
 
 # ══════════════════════════════════════════════
-#  🔑  Helpers
+#  Helpers
 # ══════════════════════════════════════════════
 
 def get_user_from_token(token_str):
@@ -161,27 +161,27 @@ def get_slot_value(intent, name):
 
 
 # ══════════════════════════════════════════════
-#  🔌  Device Logic – DB Based
+#  Device Logic – DB Based
 # ══════════════════════════════════════════════
 
 def find_device(user, spoken_name):
     """
-    يبحث عن جهاز المستخدم بالاسم.
-    يدعم تطابق كامل أو جزئي (case-insensitive).
-    مثال: قال "الاضاءة" → يجد "الإضاءة"
+    Searches the user's devices by name.
+    Supports exact match first, then partial match (case-insensitive).
+    Each user only has access to their own devices.
     """
     if not spoken_name:
         return None
 
     spoken = spoken_name.strip().lower()
 
-    # 1. تطابق كامل
+    # 1. Exact match
     try:
         return user.devices.get(name__iexact=spoken)
     except Device.DoesNotExist:
         pass
 
-    # 2. تطابق جزئي
+    # 2. Partial match — only if exactly one result to avoid ambiguity
     matches = user.devices.filter(name__icontains=spoken)
     if matches.count() == 1:
         return matches.first()
@@ -191,34 +191,34 @@ def find_device(user, spoken_name):
 
 def control_device(user, spoken_name, action):
     """
-    يغيّر حالة الجهاز في DB ويرجع نص للـ Alexa.
-    يفصل تماماً بين المستخدمين (user-scoped).
+    Updates device state in the DB and returns a text response for Alexa.
+    Fully user-scoped — each user only controls their own devices.
     """
     if not spoken_name:
         devices = user.devices.all()
         if devices.exists():
-            names = "، ".join(d.name for d in devices)
-            return f"لم أفهم اسم الجهاز. أجهزتك المسجّلة: {names}."
-        return "لم أفهم اسم الجهاز، ولا يوجد لديك أجهزة مسجّلة بعد."
+            names = ", ".join(d.name for d in devices)
+            return f"I didn't catch which device you meant. Your registered devices are: {names}."
+        return "I didn't catch which device you meant, and you have no registered devices yet."
 
     device = find_device(user, spoken_name)
 
     if not device:
         devices = user.devices.all()
         if devices.exists():
-            names = "، ".join(d.name for d in devices)
-            return f"لم أجد جهازاً باسم {spoken_name}. أجهزتك المسجّلة: {names}."
-        return f"لم أجد جهازاً باسم {spoken_name}. لم تسجّل أي جهاز بعد."
+            names = ", ".join(d.name for d in devices)
+            return f"I couldn't find a device named {spoken_name}. Your registered devices are: {names}."
+        return f"I couldn't find a device named {spoken_name}. You have no registered devices yet."
 
     device.is_on = (action == "on")
     device.save()
 
-    verb = "تم تشغيل" if action == "on" else "تم إيقاف"
-    return f"{verb} {device.name}."
+    verb = "turned on" if action == "on" else "turned off"
+    return f"OK, I've {verb} {device.name}."
 
 
 # ══════════════════════════════════════════════
-#  🎯  Alexa Intent Handlers
+#  Alexa Intent Handlers
 # ══════════════════════════════════════════════
 
 def handle_launch(user):
@@ -228,8 +228,8 @@ def handle_launch(user):
 
     if count == 0:
         return build_response(
-            f"أهلاً {name}، مرحباً بك في Baz Rays. لم تسجّل أي جهاز بعد، "
-            "أضف أجهزتك من التطبيق.",
+            f"Welcome {name}! You have no registered devices yet. "
+            "Add your devices from the app.",
             should_end_session=False,
         )
 
@@ -238,15 +238,15 @@ def handle_launch(user):
 
     status_parts = []
     if on_devices:
-        status_parts.append(f"يعمل حالياً: {'، '.join(on_devices)}")
+        status_parts.append(f"on: {', '.join(on_devices)}")
     if off_devices:
-        status_parts.append(f"مطفأ: {'، '.join(off_devices)}")
+        status_parts.append(f"off: {', '.join(off_devices)}")
 
     status = ". ".join(status_parts)
     return build_response(
-        f"أهلاً {name}. لديك {count} جهاز. {status}. ماذا تريد؟",
+        f"Welcome {name}. You have {count} device{'s' if count > 1 else ''}. {status}. What would you like to do?",
         should_end_session=False,
-        reprompt="قل مثلاً: شغّل الإضاءة.",
+        reprompt="Try saying: turn on the lights.",
     )
 
 
@@ -263,46 +263,46 @@ def handle_turn_off(intent, user):
 def handle_list_devices(user):
     devices = user.devices.all()
     if not devices.exists():
-        return build_response("لم تسجّل أي جهاز بعد. أضف أجهزتك من التطبيق.")
+        return build_response("You have no registered devices yet. Add them from the app.")
 
     on_list  = [d.name for d in devices if d.is_on]
     off_list = [d.name for d in devices if not d.is_on]
 
     parts = []
     if on_list:
-        parts.append(f"شغّال: {'، '.join(on_list)}")
+        parts.append(f"on: {', '.join(on_list)}")
     if off_list:
-        parts.append(f"مطفأ: {'، '.join(off_list)}")
+        parts.append(f"off: {', '.join(off_list)}")
 
-    return build_response("أجهزتك: " + ". ".join(parts) + ".", should_end_session=False)
+    return build_response("Your devices — " + ". ".join(parts) + ".", should_end_session=False)
 
 
 def handle_help():
     return build_response(
-        "يمكنك قول: شغّل الإضاءة، أو أوقف المكيف، أو اذكر أجهزتي.",
+        "You can say: turn on the lights, turn off the fan, or list my devices.",
         should_end_session=False,
     )
 
 
 def handle_stop():
-    return build_response("إلى اللقاء من Baz Rays!")
+    return build_response("Goodbye from Baz Rays!")
 
 
 def handle_fallback():
     return build_response(
-        "لم أفهم، قل مساعدة لمعرفة الأوامر.",
+        "Sorry, I didn't understand that. Say help for a list of commands.",
         should_end_session=False,
     )
 
 
 # ══════════════════════════════════════════════
-#  🚀  Alexa Webhook
+#  Alexa Webhook
 # ══════════════════════════════════════════════
 
 @csrf_exempt
 def alexa_webhook(request):
     if request.method == "GET":
-        return JsonResponse({"status": "ok", "message": "Alexa endpoint is working ✅"})
+        return JsonResponse({"status": "ok", "message": "Alexa endpoint is working"})
 
     try:
         body = json.loads(request.body)
@@ -323,7 +323,7 @@ def alexa_webhook(request):
                 "response": {
                     "outputSpeech": {
                         "type": "PlainText",
-                        "text": "يرجى ربط حسابك أولاً من تطبيق Alexa.",
+                        "text": "Please link your account first. Open the Alexa app to complete account linking.",
                     },
                     "card": {"type": "LinkAccount"},
                     "shouldEndSession": True,
@@ -355,18 +355,18 @@ def alexa_webhook(request):
             response_data = {"version": "1.0", "response": {}}
 
         else:
-            response_data = build_response("وداعاً!")
+            response_data = build_response("Goodbye!")
 
         print("ALEXA RESPONSE:\n", json.dumps(response_data, indent=2))
         return JsonResponse(response_data)
 
     except Exception:
         print("ALEXA ERROR:\n", traceback.format_exc())
-        return JsonResponse(build_response("حدث خطأ داخلي."))
+        return JsonResponse(build_response("An internal error occurred."))
 
 
 # ══════════════════════════════════════════════
-#  📱  Flutter App APIs
+#  Flutter App APIs
 # ══════════════════════════════════════════════
 
 @csrf_exempt
@@ -430,7 +430,7 @@ def app_authorize_view(request):
 # ── Devices API ──
 
 def _auth_from_header(request):
-    """يستخرج المستخدم من Authorization: Bearer <token>"""
+    """Extracts the user from the Authorization: Bearer <token> header."""
     auth = request.META.get("HTTP_AUTHORIZATION", "")
     if auth.startswith("Bearer "):
         return get_user_from_token(auth[7:])
@@ -440,8 +440,8 @@ def _auth_from_header(request):
 @csrf_exempt
 def devices_view(request):
     """
-    GET  /api/devices/  → قائمة أجهزة المستخدم
-    POST /api/devices/  → إضافة جهاز جديد
+    GET  /api/devices/  -> list the current user's devices
+    POST /api/devices/  -> register a new device
     """
     user = _auth_from_header(request)
     if not user:
@@ -481,20 +481,21 @@ def devices_view(request):
 @csrf_exempt
 def device_detail_view(request, device_id):
     """
-    PATCH  /api/devices/<id>/  → تبديل حالة الجهاز
-    DELETE /api/devices/<id>/  → حذف الجهاز
+    PATCH  /api/devices/<id>/  -> update device state (on/off)
+    DELETE /api/devices/<id>/  -> delete device
     """
     user = _auth_from_header(request)
     if not user:
         return JsonResponse({"error": "unauthorized"}, status=401)
 
     try:
-        device = user.devices.get(id=device_id)   # يضمن الفصل بين المستخدمين
+        # Scoped to the current user — prevents accessing another user's devices
+        device = user.devices.get(id=device_id)
     except Device.DoesNotExist:
         return JsonResponse({"error": "not_found"}, status=404)
 
     if request.method == "PATCH":
-        data      = json.loads(request.body)
+        data = json.loads(request.body)
         device.is_on = data.get("is_on", device.is_on)
         device.save()
         return JsonResponse({"id": device.id, "name": device.name, "is_on": device.is_on})
