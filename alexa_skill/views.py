@@ -322,3 +322,132 @@ def alexa_webhook(request):
                 "shouldEndSession": True,
             },
         })
+
+
+# أضف هذه الـ views الجديدة في نهاية views.py الموجود
+
+# ─────────────────────────────────────────────
+# 📱  APP AUTHORIZE  →  POST /api/app-authorize/
+# ─────────────────────────────────────────────
+# Flutter يستدعيه مباشرة بعد تسجيل الدخول
+# يرجع callback_url جاهز لـ Alexa
+
+@csrf_exempt
+def app_authorize_view(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "method_not_allowed"}, status=405)
+
+    try:
+        data         = json.loads(request.body)
+        username     = data.get("username", "")
+        password     = data.get("password", "")
+        redirect_uri = data.get("redirect_uri", "")
+        state        = data.get("state", "")
+        client_id    = data.get("client_id", "")
+
+   
+        # تحقق من الـ params
+        if not redirect_uri or not state:
+            return JsonResponse({"error": "missing_oauth_params"}, status=400)
+
+        # authenticate المستخدم
+        from django.contrib.auth import authenticate as dj_authenticate
+        user = dj_authenticate(username=username, password=password)
+
+        if user is None:
+            return JsonResponse({"error": "invalid_credentials"}, status=401)
+
+        # أنشئ Auth Code
+        code = str(uuid.uuid4())
+        AuthCode.objects.create(user=user, code=code)
+
+        # ابنِ الـ callback URL الجاهز
+        params       = urlencode({"state": state, "code": code})
+        callback_url = f"{redirect_uri}?{params}"
+
+        return JsonResponse({
+            "success":      True,
+            "callback_url": callback_url,
+            "username":     user.username,
+        })
+
+    except Exception:
+        
+        return JsonResponse({"error": "server_error"}, status=500)
+
+
+# ─────────────────────────────────────────────
+# 📱  APP LOGIN  →  POST /api/login/
+# ─────────────────────────────────────────────
+# تسجيل دخول عادي من التطبيق (بدون Alexa)
+
+@csrf_exempt
+def app_login_view(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "method_not_allowed"}, status=405)
+
+    try:
+        data     = json.loads(request.body)
+        username = data.get("username", "")
+        password = data.get("password", "")
+
+        from django.contrib.auth import authenticate as dj_authenticate
+        user = dj_authenticate(username=username, password=password)
+
+        if user is None:
+            return JsonResponse({"error": "invalid_credentials"}, status=401)
+
+        # أنشئ Access Token للتطبيق
+        token = str(uuid.uuid4())
+        AccessToken.objects.create(user=user, token=token)
+
+        return JsonResponse({
+            "access_token": token,
+            "username":     user.username,
+            "first_name":   user.first_name,
+        })
+
+    except Exception:
+        
+        return JsonResponse({"error": "server_error"}, status=500)
+
+
+# ─────────────────────────────────────────────
+# 🔗  ANDROID APP LINKS VERIFICATION
+#     GET /.well-known/assetlinks.json
+# ─────────────────────────────────────────────
+# Android يتحقق من هذا الملف لإثبات ملكية الـ App Link
+# يجب استبدال SHA256_FINGERPRINT بـ fingerprint تطبيقك
+
+def assetlinks_view(request):
+    # 👇 استبدل هذه القيمة بـ SHA-256 fingerprint من keystore تطبيقك
+    # الحصول عليها: keytool -list -v -keystore your-key.jks
+    SHA256_FINGERPRINT = "44:F1:F5:7D:ED:6F:3D:76:8F:2E:6C:FE:0E:5D:D0:23:A8:BC:A0:05:B7:86:36:0D:54:FE:DD:6E:27:1C:35:F6"
+
+    data = [{
+        "relation": ["delegate_permission/common.handle_all_urls"],
+        "target": {
+            "namespace": "android_app",
+            "package_name": "com.example.app",  # ← غيّر لـ package name تطبيقك
+            "sha256_cert_fingerprints": [SHA256_FINGERPRINT]
+        }
+    }]
+
+    from django.http import JsonResponse
+    return JsonResponse(data, safe=False)
+
+
+# ─────────────────────────────────────────────
+# 🌐  ALEXA-LOGIN PAGE  →  GET /alexa-login/
+# ─────────────────────────────────────────────
+# هذا الرابط يفتحه Alexa → Android يعترضه ويفتح التطبيق
+# لو لم يكن التطبيق مثبتاً، يظهر صفحة ويب احتياطية
+
+def alexa_login_redirect_view(request):
+    redirect_uri = request.GET.get("redirect_uri", "")
+    state        = request.GET.get("state", "")
+    client_id    = request.GET.get("client_id", "")
+
+    # Fallback: لو لم يُفتح التطبيق، وجّه للـ web login
+    qs = urlencode({"redirect_uri": redirect_uri, "state": state})
+    return redirect(f"/login/?{qs}")
